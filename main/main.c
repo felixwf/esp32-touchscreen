@@ -5,13 +5,8 @@
 #include "esp_check.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "string.h"
 
-
-#define ESP_CHECK(x) \
-    if (x != ESP_OK)  \
-    {                 \
-        return;       \
-    }
 
 void taskdisplay_start(void)
 {
@@ -57,15 +52,50 @@ esp_err_t esp_check(void)
     return ret;
 }
 
+// 定义用于存储任务状态信息的字符数组的大小
+#define TASKS_STATUS_BUFFER_SIZE 2048
+
+// 任务状态打印函数
+void printTasksStatus(void *parameters) {
+    // 分配内存用于存储任务状态信息
+    char *taskStatusBuffer = malloc(TASKS_STATUS_BUFFER_SIZE);
+    if (taskStatusBuffer == NULL) {
+        ESP_LOGE("TASKS", "Failed to allocate memory for task status buffer.");
+        vTaskDelete(NULL); // 删除当前任务
+    }
+
+    for (;;) {
+        // 清零内存区域
+        memset(taskStatusBuffer, 0, TASKS_STATUS_BUFFER_SIZE);
+        // 打印列名称
+        ESP_LOGI("TASKS", "Name\t\tState\tPrio\tStack\tNum");
+        // 获取并填充所有任务的状态信息
+        vTaskList(taskStatusBuffer);
+        // 打印任务状态信息
+        ESP_LOGI("TASKS", "Task Status:\n%s", taskStatusBuffer);
+
+        // 等待一段时间，这里设置为每5秒打印一次
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+
+    // 任务结束后释放内存
+    free(taskStatusBuffer);
+}
+
+void taskstatus_start(void) {
+    // 创建任务
+    xTaskCreate(printTasksStatus, "printTasksStatus", 2048, NULL, 5, NULL);
+}
 
 void app_main(void)
 {
-    ESP_CHECK(esp_check());
-    ESP_LOGI("main", "Starting task display");
+    ESP_ERROR_CHECK(esp_check());
+    
     taskdisplay_start();
     ESP_LOGI("main", "Task display started");
-    while (1)
-    {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
+    taskstatus_start();
+    ESP_LOGI("main", "Task status started");
+
+
+    ESP_LOGI("main", "All tasks started");
 }

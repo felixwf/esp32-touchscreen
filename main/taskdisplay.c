@@ -46,7 +46,7 @@
 #define EXAMPLE_TOUCH_I2C_SDA       (GPIO_NUM_8)
 #define EXAMPLE_TOUCH_GPIO_INT      (GPIO_NUM_3)
 
-static const char *TAG = "DISPLAYTASK";
+static const char *TAG = "taskdisplay";
 
 /* LCD IO and panel */
 static esp_lcd_panel_io_handle_t lcd_io = NULL;
@@ -243,6 +243,7 @@ static void app_main_display(void)
 
 void vTaskDisplay(void *pvParameters)
 {
+    // ESP_ERROR_CHECK_WITHOUT_ABORT(esp_check_stack());
     /* LCD HW initialization */
     ESP_ERROR_CHECK(app_lcd_init());
 
