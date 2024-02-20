@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "string.h"
+#include "task_lcd_touch.h"
 
 
 void taskdisplay_start(void)
@@ -87,12 +88,17 @@ void taskstatus_start(void) {
     xTaskCreate(printTasksStatus, "printTasksStatus", 2048, NULL, 5, NULL);
 }
 
+void task_lcd_touch_start(void) {
+    xTaskCreate(vTaskLcdTouch, "vTaskLcdTouch", 2048, NULL, 5, NULL);
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(esp_check());
     
-    taskdisplay_start();
-    ESP_LOGI("main", "Task display started");
+    // taskdisplay_start();
+    task_lcd_touch_start();
+    ESP_LOGI("main", "Task task_lcd_touch_start started");
     taskstatus_start();
     ESP_LOGI("main", "Task status started");
 

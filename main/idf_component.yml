@@ -1,6 +1,8 @@
 dependencies:
-  esp_lcd_touch_tt21100:
-    version: ^1
+  esp_lcd_touch_cst816s:
+    version: "^1.0"
+  esp_lcd_gc9a01:
+    version: "^1.0"
   esp_lvgl_port:
     version: '>=1.2.0'
   idf:

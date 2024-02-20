@@ -12,10 +12,15 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lvgl_port.h"
 
-#include "esp_lcd_touch_tt21100.h"
+#include "esp_lcd_touch_cst816s.h"
+#include "esp_lcd_gc9a01.h"
+#include "freertos/semphr.h"
+
+#include "unity.h"
+#include "unity_test_runner.h"
 
 /* LCD size */
-#define EXAMPLE_LCD_H_RES   (320)
+#define EXAMPLE_LCD_H_RES   (240)
 #define EXAMPLE_LCD_V_RES   (240)
 
 /* LCD settings */
@@ -30,21 +35,22 @@
 #define EXAMPLE_LCD_BL_ON_LEVEL     (1)
 
 /* LCD pins */
-#define EXAMPLE_LCD_GPIO_SCLK       (GPIO_NUM_7)
-#define EXAMPLE_LCD_GPIO_MOSI       (GPIO_NUM_6)
-#define EXAMPLE_LCD_GPIO_RST        (GPIO_NUM_48)
-#define EXAMPLE_LCD_GPIO_DC         (GPIO_NUM_4)
-#define EXAMPLE_LCD_GPIO_CS         (GPIO_NUM_5)
-#define EXAMPLE_LCD_GPIO_BL         (GPIO_NUM_45)
+#define EXAMPLE_LCD_GPIO_SCLK       (GPIO_NUM_10)
+#define EXAMPLE_LCD_GPIO_MOSI       (GPIO_NUM_11)
+#define EXAMPLE_LCD_GPIO_RST        (GPIO_NUM_14)
+#define EXAMPLE_LCD_GPIO_DC         (GPIO_NUM_8)
+#define EXAMPLE_LCD_GPIO_CS         (GPIO_NUM_9)
+#define EXAMPLE_LCD_GPIO_BL         (GPIO_NUM_2)
 
 /* Touch settings */
 #define EXAMPLE_TOUCH_I2C_NUM       (0)
 #define EXAMPLE_TOUCH_I2C_CLK_HZ    (400000)
 
 /* LCD touch pins */
-#define EXAMPLE_TOUCH_I2C_SCL       (GPIO_NUM_18)
-#define EXAMPLE_TOUCH_I2C_SDA       (GPIO_NUM_8)
-#define EXAMPLE_TOUCH_GPIO_INT      (GPIO_NUM_3)
+#define EXAMPLE_TOUCH_I2C_SCL       (GPIO_NUM_7)
+#define EXAMPLE_TOUCH_I2C_SDA       (GPIO_NUM_6)
+#define EXAMPLE_TOUCH_GPIO_INT      (GPIO_NUM_5)
+#define EXAMPLE_TOUCH_GPIO_RST      (GPIO_NUM_13)
 
 static const char *TAG = "taskdisplay";
 
@@ -56,6 +62,136 @@ static esp_lcd_touch_handle_t touch_handle = NULL;
 /* LVGL display and touch */
 static lv_disp_t *lvgl_disp = NULL;
 static lv_indev_t *lvgl_touch_indev = NULL;
+
+
+//        ESP Board                       GC9A01/ILI9341 Panel + TOUCH
+// ┌──────────────────────┐              ┌────────────────────┐
+// │             GND      ├─────────────►│ GND                │
+// │                      │              │                    │
+// │             3V3      ├─────────────►│ VCC                │
+// │                      │              │                    │
+// │             PCLK     ├─────────────►│ SCL                │
+// │                      │              │                    │
+// │             MOSI     ├─────────────►│ MOSI               │
+// │                      │              │                    │
+// │             MISO     |◄─────────────┤ MISO               │
+// │                      │              │                    │
+// │             RST      ├─────────────►│ RES                │
+// │                      │              │                    │
+// │             DC       ├─────────────►│ DC                 │
+// │                      │              │                    │
+// │             LCD CS   ├─────────────►│ LCD CS             │
+// │                      │              │                    │
+// │             TOUCH CS ├─────────────►│ TOUCH CS           │
+// │                      │              │                    │
+// │             BK_LIGHT ├─────────────►│ BLK                │
+// └──────────────────────┘              └────────────────────┘
+
+
+// static SemaphoreHandle_t touch_mux;
+
+// touch_mux = xSemaphoreCreateBinary();
+
+// static void touch_callback(esp_lcd_touch_handle_t tp)
+// {
+//     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+//     xSemaphoreGiveFromISR(touch_mux, &xHigherPriorityTaskWoken);
+
+//     if (xHigherPriorityTaskWoken) {
+//         portYIELD_FROM_ISR();
+//     }
+// }
+
+
+// static esp_err_t cst816s_touch_init(void)
+// {
+//     ESP_LOGI("cst816s", "Initialize i2c bus");
+//     esp_lcd_panel_io_i2c_config_t io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
+
+//     esp_lcd_touch_config_t tp_cfg = {
+//         .x_max = EXAMPLE_LCD_H_RES,
+//         .y_max = EXAMPLE_LCD_V_RES,
+//         .rst_gpio_num = EXAMPLE_TOUCH_GPIO_RST,
+//         .int_gpio_num = EXAMPLE_TOUCH_GPIO_INT,
+//         .levels = {
+//             .reset = 0,
+//             .interrupt = 0,
+//         },
+//         .flags = {
+//             .swap_xy = 0,
+//             .mirror_x = 0,
+//             .mirror_y = 0,
+//         },
+//         .interrupt_callback = touch_callback,
+//     };
+
+//     esp_lcd_touch_handle_t tp;
+//     esp_lcd_touch_new_i2c_cst816s(io_handle, &tp_cfg, &tp);
+
+// }
+
+// static char *TAG = "gc9a01";
+static SemaphoreHandle_t refresh_finish = NULL;
+
+IRAM_ATTR static bool test_notify_refresh_ready(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx)
+{
+    BaseType_t need_yield = pdFALSE;
+
+    xSemaphoreGiveFromISR(refresh_finish, &need_yield);
+    return (need_yield == pdTRUE);
+}
+
+static esp_err_t gc9a01_lcd_init(void)
+{
+    ESP_LOGI("gc9a01", "Initialize SPI bus");
+    const spi_bus_config_t bus_config = GC9A01_PANEL_BUS_SPI_CONFIG(EXAMPLE_LCD_GPIO_SCLK, EXAMPLE_LCD_GPIO_MOSI,
+                                                                    EXAMPLE_LCD_H_RES * 80 * sizeof(uint16_t));
+    ESP_ERROR_CHECK(spi_bus_initialize(EXAMPLE_LCD_SPI_NUM, &bus_config, SPI_DMA_CH_AUTO));
+
+    ESP_LOGI("gc9a01", "Install panel IO");
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    const esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(EXAMPLE_LCD_GPIO_CS, EXAMPLE_LCD_GPIO_DC,
+                                                                               test_notify_refresh_ready, NULL);
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)EXAMPLE_LCD_SPI_NUM, &io_config, &io_handle));
+
+/**
+ * Uncomment these lines if use custom initialization commands.
+ * The array should be declared as "static const" and positioned outside the function.
+ */
+// static const gc9a01_lcd_init_cmd_t lcd_init_cmds[] = {
+// //  {cmd, { data }, data_size, delay_ms}
+//     {0xfe, (uint8_t []){0x00}, 0, 0},
+//     {0xef, (uint8_t []){0x00}, 0, 0},
+//     {0xeb, (uint8_t []){0x14}, 1, 0},
+//     ...
+// };
+
+    ESP_LOGI(TAG, "Install GC9A01 panel driver");
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    // gc9a01_vendor_config_t vendor_config = {  // Uncomment these lines if use custom initialization commands
+    //     .init_cmds = lcd_init_cmds,
+    //     .init_cmds_size = sizeof(lcd_init_cmds) / sizeof(gc9a01_lcd_init_cmd_t),
+    // };
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = EXAMPLE_LCD_GPIO_RST,      // Set to -1 if not use
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+        .color_space = ESP_LCD_COLOR_SPACE_RGB,
+#else
+        .rgb_endian = LCD_RGB_ENDIAN_RGB,
+#endif
+        .bits_per_pixel = 16,                           // Implemented by LCD command `3Ah` (16/18)
+        // .vendor_config = &vendor_config,            // Uncomment this line if use custom initialization commands
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(io_handle, &panel_config, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_off(panel_handle, false));
+#else
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+#endif
+
+}
 
 static esp_err_t app_lcd_init(void)
 {
@@ -121,41 +257,136 @@ err:
     return ret;
 }
 
-static esp_err_t app_touch_init(void)
+static void test_draw_bitmap(esp_lcd_panel_handle_t panel_handle)
 {
-    /* Initilize I2C */
-    const i2c_config_t i2c_conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = EXAMPLE_TOUCH_I2C_SDA,
-        .sda_pullup_en = GPIO_PULLUP_DISABLE,
-        .scl_io_num = EXAMPLE_TOUCH_I2C_SCL,
-        .scl_pullup_en = GPIO_PULLUP_DISABLE,
-        .master.clk_speed = EXAMPLE_TOUCH_I2C_CLK_HZ
-    };
-    ESP_RETURN_ON_ERROR(i2c_param_config(EXAMPLE_TOUCH_I2C_NUM, &i2c_conf), TAG, "I2C configuration failed");
-    ESP_RETURN_ON_ERROR(i2c_driver_install(EXAMPLE_TOUCH_I2C_NUM, i2c_conf.mode, 0, 0, 0), TAG, "I2C initialization failed");
+    refresh_finish = xSemaphoreCreateBinary();
+    TEST_ASSERT_NOT_NULL(refresh_finish);
 
-    /* Initialize touch HW */
-    const esp_lcd_touch_config_t tp_cfg = {
-        .x_max = EXAMPLE_LCD_H_RES,
-        .y_max = EXAMPLE_LCD_V_RES,
-        .rst_gpio_num = GPIO_NUM_NC, // Shared with LCD reset
-        .int_gpio_num = EXAMPLE_TOUCH_GPIO_INT,
-        .levels = {
-            .reset = 0,
-            .interrupt = 0,
-        },
-        .flags = {
-            .swap_xy = 0,
-            .mirror_x = 1,
-            .mirror_y = 0,
-        },
-    };
-    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-    const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_TT21100_CONFIG();
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)EXAMPLE_TOUCH_I2C_NUM, &tp_io_config, &tp_io_handle), TAG, "");
-    return esp_lcd_touch_new_i2c_tt21100(tp_io_handle, &tp_cfg, &touch_handle);
+    uint16_t row_line = EXAMPLE_LCD_H_RES / EXAMPLE_LCD_BITS_PER_PIXEL;
+    uint8_t byte_per_pixel = EXAMPLE_LCD_BITS_PER_PIXEL / 8;
+    uint8_t *color = (uint8_t *)heap_caps_calloc(1, row_line * EXAMPLE_LCD_H_RES * byte_per_pixel, MALLOC_CAP_DMA);
+    TEST_ASSERT_NOT_NULL(color);
+
+    for (int j = 0; j < EXAMPLE_LCD_BITS_PER_PIXEL; j++) {
+        for (int i = 0; i < row_line * EXAMPLE_LCD_H_RES; i++) {
+            for (int k = 0; k < byte_per_pixel; k++) {
+                color[i * byte_per_pixel + k] = (SPI_SWAP_DATA_TX(BIT(j), EXAMPLE_LCD_BITS_PER_PIXEL) >> (k * 8)) & 0xff;
+            }
+        }
+        TEST_ESP_OK(esp_lcd_panel_draw_bitmap(panel_handle, 0, j * row_line, EXAMPLE_LCD_H_RES, (j + 1) * row_line, color));
+        xSemaphoreTake(refresh_finish, portMAX_DELAY);
+    }
+    free(color);
+    vSemaphoreDelete(refresh_finish);
 }
+#define TEST_DELAY_TIME_MS          (3000)
+
+TEST_CASE("test gc9a01 to draw color bar with SPI interface", "[gc9a01][spi]")
+{
+    ESP_LOGI(TAG, "Initialize SPI bus");
+    const spi_bus_config_t buscfg = GC9A01_PANEL_BUS_SPI_CONFIG(EXAMPLE_LCD_GPIO_SCLK, EXAMPLE_LCD_GPIO_MOSI,
+                                    EXAMPLE_LCD_H_RES * 80 * EXAMPLE_LCD_BITS_PER_PIXEL / 8);
+    TEST_ESP_OK(spi_bus_initialize(EXAMPLE_LCD_SPI_NUM, &buscfg, SPI_DMA_CH_AUTO));
+
+    ESP_LOGI(TAG, "Install panel IO");
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    const esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(EXAMPLE_LCD_GPIO_CS, EXAMPLE_LCD_GPIO_DC,
+            test_notify_refresh_ready, NULL);
+    // Attach the LCD to the SPI bus
+    TEST_ESP_OK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)EXAMPLE_LCD_SPI_NUM, &io_config, &io_handle));
+
+    ESP_LOGI(TAG, "Install gc9a01 panel driver");
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = EXAMPLE_LCD_GPIO_RST,
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+        .color_space = ESP_LCD_COLOR_SPACE_BGR,
+#else
+        .rgb_endian = LCD_RGB_ENDIAN_BGR,
+#endif
+        .bits_per_pixel = EXAMPLE_LCD_BITS_PER_PIXEL,
+    };
+    TEST_ESP_OK(esp_lcd_new_panel_gc9a01(io_handle, &panel_config, &panel_handle));
+    TEST_ESP_OK(esp_lcd_panel_reset(panel_handle));
+    TEST_ESP_OK(esp_lcd_panel_init(panel_handle));
+    TEST_ESP_OK(esp_lcd_panel_invert_color(panel_handle, true));
+    TEST_ESP_OK(esp_lcd_panel_mirror(panel_handle, true, false));
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+    TEST_ESP_OK(esp_lcd_panel_disp_off(panel_handle, false));
+#else
+    TEST_ESP_OK(esp_lcd_panel_disp_on_off(panel_handle, true));
+#endif
+
+    test_draw_bitmap(panel_handle);
+    vTaskDelay(pdMS_TO_TICKS(TEST_DELAY_TIME_MS));
+
+    TEST_ESP_OK(esp_lcd_panel_del(panel_handle));
+    TEST_ESP_OK(esp_lcd_panel_io_del(io_handle));
+    TEST_ESP_OK(spi_bus_free(EXAMPLE_LCD_SPI_NUM));
+}
+
+// Some resources are lazy allocated in the LCD driver, the threadhold is left for that case
+#define TEST_MEMORY_LEAK_THRESHOLD (-300)
+
+static size_t before_free_8bit;
+static size_t before_free_32bit;
+
+static void check_leak(size_t before_free, size_t after_free, const char *type)
+{
+    ssize_t delta = after_free - before_free;
+    printf("MALLOC_CAP_%s: Before %u bytes free, After %u bytes free (delta %d)\n", type, before_free, after_free, delta);
+    TEST_ASSERT_MESSAGE(delta >= TEST_MEMORY_LEAK_THRESHOLD, "memory leak");
+}
+
+void setUp(void)
+{
+    before_free_8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    before_free_32bit = heap_caps_get_free_size(MALLOC_CAP_32BIT);
+}
+
+void tearDown(void)
+{
+    size_t after_free_8bit = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t after_free_32bit = heap_caps_get_free_size(MALLOC_CAP_32BIT);
+    check_leak(before_free_8bit, after_free_8bit, "8BIT");
+    check_leak(before_free_32bit, after_free_32bit, "32BIT");
+}
+
+// static esp_err_t app_touch_init(void)
+// {
+//     /* Initilize I2C */
+//     const i2c_config_t i2c_conf = {
+//         .mode = I2C_MODE_MASTER,
+//         .sda_io_num = EXAMPLE_TOUCH_I2C_SDA,
+//         .sda_pullup_en = GPIO_PULLUP_DISABLE,
+//         .scl_io_num = EXAMPLE_TOUCH_I2C_SCL,
+//         .scl_pullup_en = GPIO_PULLUP_DISABLE,
+//         .master.clk_speed = EXAMPLE_TOUCH_I2C_CLK_HZ
+//     };
+//     ESP_RETURN_ON_ERROR(i2c_param_config(EXAMPLE_TOUCH_I2C_NUM, &i2c_conf), TAG, "I2C configuration failed");
+//     ESP_RETURN_ON_ERROR(i2c_driver_install(EXAMPLE_TOUCH_I2C_NUM, i2c_conf.mode, 0, 0, 0), TAG, "I2C initialization failed");
+
+//     /* Initialize touch HW */
+//     const esp_lcd_touch_config_t tp_cfg = {
+//         .x_max = EXAMPLE_LCD_H_RES,
+//         .y_max = EXAMPLE_LCD_V_RES,
+//         .rst_gpio_num = GPIO_NUM_NC, // Shared with LCD reset
+//         .int_gpio_num = EXAMPLE_TOUCH_GPIO_INT,
+//         .levels = {
+//             .reset = 0,
+//             .interrupt = 0,
+//         },
+//         .flags = {
+//             .swap_xy = 0,
+//             .mirror_x = 1,
+//             .mirror_y = 0,
+//         },
+//     };
+//     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
+//     const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_TT21100_CONFIG();
+//     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)EXAMPLE_TOUCH_I2C_NUM, &tp_io_config, &tp_io_handle), TAG, "");
+//     return esp_lcd_touch_new_i2c_tt21100(tp_io_handle, &tp_cfg, &touch_handle);
+// }
 
 static esp_err_t app_lvgl_init(void)
 {
@@ -248,14 +479,19 @@ void vTaskDisplay(void *pvParameters)
     ESP_ERROR_CHECK(app_lcd_init());
 
     /* Touch initialization */
-    ESP_ERROR_CHECK(app_touch_init());
+    // ESP_ERROR_CHECK(app_touch_init());
 
     /* LVGL initialization */
-    ESP_ERROR_CHECK(app_lvgl_init());
+    // ESP_ERROR_CHECK(app_lvgl_init());
 
     /* Show LVGL objects */
-    app_main_display();
-
+    // app_main_display();
+    printf("   ___   ___  ___    _    ___  _\r\n");
+    printf("  / _ \\ / __\\/ _ \\  /_\\  / _ \\/ |\r\n");
+    printf(" / /_\\// /  | (_) |//_\\\\| | | | |\r\n");
+    printf("/ /_\\\\/ /___ \\__, /  _  \\ |_| | |\r\n");
+    printf("\\____/\\____/   /_/\\_/ \\_/\\___/|_|\r\n");
+    unity_run_menu();
     while (true)
     {
         ESP_LOGI(TAG, "Display task running");
