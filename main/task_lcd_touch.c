@@ -53,7 +53,6 @@ static const char *TAG = "lcd_touch";
 
 // Using SPI3 in the example
 #define LCD_HOST  SPI3_HOST
-#define I2C_NUM   SPI3_HOST
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////// Please update the following configuration according to your LCD spec //////////////////////////////
@@ -190,6 +189,7 @@ static void example_lvgl_touch_cb(lv_indev_drv_t * drv, lv_indev_data_t * data)
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
+    // ESP_LOGI("touch ret", "x: %d, y: %d, s: %d", data->point.x, data->point.y, data->state);
 }
 #endif
 
@@ -204,14 +204,14 @@ void vTaskLcdTouch(void *pvParameters)
     static lv_disp_draw_buf_t disp_buf; // contains internal graphic buffer(s) called draw buffer(s)
     static lv_disp_drv_t disp_drv;      // contains callback functions
 
-    // ESP_LOGI(TAG, "Turn off LCD backlight");
-    // gpio_config_t bk_gpio_config = {
-    //     .mode = GPIO_MODE_OUTPUT,
-    //     .pin_bit_mask = 1ULL << EXAMPLE_PIN_NUM_BK_LIGHT,
-    //     .intr_type = GPIO_INTR_DISABLE,
-    //     .pull_up_en = GPIO_PULLUP_ENABLE,
-    // };
-    // ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
+    ESP_LOGI(TAG, "Turn off LCD backlight");
+    gpio_config_t bk_gpio_config = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << EXAMPLE_PIN_NUM_BK_LIGHT,
+        .intr_type = GPIO_INTR_DISABLE,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
 
     ESP_LOGI(TAG, "Initialize SPI bus");
     spi_bus_config_t buscfg = {
@@ -264,15 +264,14 @@ void vTaskLcdTouch(void *pvParameters)
     // user can flush pre-defined pattern to the screen before we turn on the screen or backlight
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
+
+    /**Touch init**/
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
 #if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610
     esp_lcd_panel_io_spi_config_t tp_io_config = ESP_LCD_TOUCH_IO_SPI_STMPE610_CONFIG(EXAMPLE_PIN_NUM_TOUCH_CS);
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &tp_io_config, &tp_io_handle));
 #elif CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
-    // esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
-    // ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)LCD_HOST, &tp_io_config, &tp_io_handle));
-
     /* Initilize I2C */
     const i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
