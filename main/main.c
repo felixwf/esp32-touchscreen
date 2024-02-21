@@ -89,7 +89,7 @@ void taskstatus_start(void) {
 }
 
 void task_lcd_touch_start(void) {
-    xTaskCreate(vTaskLcdTouch, "vTaskLcdTouch", 2048, NULL, 5, NULL);
+    xTaskCreate(vTaskLcdTouch, "vTaskLcdTouch", 4096, NULL, 5, NULL);
 }
 
 void app_main(void)

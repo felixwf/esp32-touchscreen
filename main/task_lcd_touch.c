@@ -7,21 +7,33 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+
 #include "esp_timer.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_check.h"
+
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_lcd_touch_cst816s.h"
+#include "esp_lcd_gc9a01.h"
+
+#include "driver/i2c.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
-#include "esp_err.h"
-#include "esp_log.h"
+
+
 #include "lvgl.h"
 #include "task_lcd_touch.h"
 
+// only enable 1 lcd controller
 #define CONFIG_EXAMPLE_LCD_CONTROLLER_GC9A01 1
 #define CONFIG_EXAMPLE_LCD_CONTROLLER_ILI9341 0
 
 #define CONFIG_EXAMPLE_LCD_TOUCH_ENABLED 1
+// only enable 1 touch controller
 #define CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610 0
 #define CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S 1
 
@@ -40,24 +52,35 @@
 static const char *TAG = "lcd_touch";
 
 // Using SPI3 in the example
-#define LCD_HOST  SPI2_HOST
+#define LCD_HOST  SPI3_HOST
+#define I2C_NUM   SPI3_HOST
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////// Please update the following configuration according to your LCD spec //////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-#define EXAMPLE_LCD_PIXEL_CLOCK_HZ     (20 * 1000 * 1000)
+#define EXAMPLE_LCD_PIXEL_CLOCK_HZ     (40 * 1000 * 1000)
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL  1
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
-#define EXAMPLE_PIN_NUM_SCLK           10
-#define EXAMPLE_PIN_NUM_MOSI           11
-#define EXAMPLE_PIN_NUM_MISO           12
-#define EXAMPLE_PIN_NUM_LCD_DC         8
-#define EXAMPLE_PIN_NUM_LCD_RST        14
-#define EXAMPLE_PIN_NUM_LCD_CS         9
-#define EXAMPLE_PIN_NUM_BK_LIGHT       2
+#define EXAMPLE_PIN_NUM_SCLK           (GPIO_NUM_10)
+#define EXAMPLE_PIN_NUM_MOSI           (GPIO_NUM_11)
+#define EXAMPLE_PIN_NUM_MISO           (GPIO_NUM_12)
+#define EXAMPLE_PIN_NUM_LCD_DC         (GPIO_NUM_8)
+#define EXAMPLE_PIN_NUM_LCD_RST        (GPIO_NUM_14)
+#define EXAMPLE_PIN_NUM_LCD_CS         (GPIO_NUM_9)
+#define EXAMPLE_PIN_NUM_BK_LIGHT       (GPIO_NUM_2)
+
+/* Touch settings */
+#define EXAMPLE_TOUCH_I2C_NUM       (0)
+#define EXAMPLE_TOUCH_I2C_CLK_HZ    (400000)
+
+/* LCD touch pins */
+#define EXAMPLE_TOUCH_I2C_SCL       (GPIO_NUM_7)
+#define EXAMPLE_TOUCH_I2C_SDA       (GPIO_NUM_6)
+#define EXAMPLE_TOUCH_GPIO_INT      (GPIO_NUM_5)
+#define EXAMPLE_TOUCH_GPIO_RST      (GPIO_NUM_13)
 
 #if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610
-#define EXAMPLE_PIN_NUM_TOUCH_CS       15
+#define EXAMPLE_PIN_NUM_TOUCH_CS       (GPIO_NUM_15)
 #endif
 // The pixel number in horizontal and vertical
 #if CONFIG_EXAMPLE_LCD_CONTROLLER_ILI9341
@@ -75,7 +98,7 @@ static const char *TAG = "lcd_touch";
 
 
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
-esp_lcd_touch_handle_t tp = NULL;
+static esp_lcd_touch_handle_t touch_handle = NULL;
 #endif
 
 extern void example_lvgl_demo_ui(lv_disp_t *disp);
@@ -110,8 +133,8 @@ static void example_lvgl_port_update_callback(lv_disp_drv_t *drv)
         esp_lcd_panel_mirror(panel_handle, true, false);
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
         // Rotate LCD touch
-        esp_lcd_touch_set_mirror_y(tp, false);
-        esp_lcd_touch_set_mirror_x(tp, false);
+        esp_lcd_touch_set_mirror_y(touch_handle, false);
+        esp_lcd_touch_set_mirror_x(touch_handle, false);
 #endif
         break;
     case LV_DISP_ROT_90:
@@ -120,8 +143,8 @@ static void example_lvgl_port_update_callback(lv_disp_drv_t *drv)
         esp_lcd_panel_mirror(panel_handle, true, true);
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
         // Rotate LCD touch
-        esp_lcd_touch_set_mirror_y(tp, false);
-        esp_lcd_touch_set_mirror_x(tp, false);
+        esp_lcd_touch_set_mirror_y(touch_handle, false);
+        esp_lcd_touch_set_mirror_x(touch_handle, false);
 #endif
         break;
     case LV_DISP_ROT_180:
@@ -130,8 +153,8 @@ static void example_lvgl_port_update_callback(lv_disp_drv_t *drv)
         esp_lcd_panel_mirror(panel_handle, false, true);
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
         // Rotate LCD touch
-        esp_lcd_touch_set_mirror_y(tp, false);
-        esp_lcd_touch_set_mirror_x(tp, false);
+        esp_lcd_touch_set_mirror_y(touch_handle, false);
+        esp_lcd_touch_set_mirror_x(touch_handle, false);
 #endif
         break;
     case LV_DISP_ROT_270:
@@ -140,8 +163,8 @@ static void example_lvgl_port_update_callback(lv_disp_drv_t *drv)
         esp_lcd_panel_mirror(panel_handle, false, false);
 #if CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
         // Rotate LCD touch
-        esp_lcd_touch_set_mirror_y(tp, false);
-        esp_lcd_touch_set_mirror_x(tp, false);
+        esp_lcd_touch_set_mirror_y(touch_handle, false);
+        esp_lcd_touch_set_mirror_x(touch_handle, false);
 #endif
         break;
     }
@@ -247,16 +270,31 @@ void vTaskLcdTouch(void *pvParameters)
     esp_lcd_panel_io_spi_config_t tp_io_config = ESP_LCD_TOUCH_IO_SPI_STMPE610_CONFIG(EXAMPLE_PIN_NUM_TOUCH_CS);
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &tp_io_config, &tp_io_handle));
 #elif CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
-    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)LCD_HOST, &tp_io_config, &tp_io_handle));
+    // esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
+    // ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)LCD_HOST, &tp_io_config, &tp_io_handle));
+
+    /* Initilize I2C */
+    const i2c_config_t i2c_conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = EXAMPLE_TOUCH_I2C_SDA,
+        .sda_pullup_en = GPIO_PULLUP_DISABLE,
+        .scl_io_num = EXAMPLE_TOUCH_I2C_SCL,
+        .scl_pullup_en = GPIO_PULLUP_DISABLE,
+        .master.clk_speed = EXAMPLE_TOUCH_I2C_CLK_HZ
+    };
+    ESP_ERROR_CHECK(i2c_param_config(EXAMPLE_TOUCH_I2C_NUM, &i2c_conf));
+    ESP_ERROR_CHECK(i2c_driver_install(EXAMPLE_TOUCH_I2C_NUM, i2c_conf.mode, 0, 0, 0));
+    // ESP_RETURN_ON_ERROR(i2c_param_config(EXAMPLE_TOUCH_I2C_NUM, &i2c_conf), TAG, "I2C configuration failed");
+    // ESP_RETURN_ON_ERROR(i2c_driver_install(EXAMPLE_TOUCH_I2C_NUM, i2c_conf.mode, 0, 0, 0), TAG, "I2C initialization failed");
+
 #endif
-    // Attach the TOUCH to the SPI bus
+    // Attach the TOUCH to the SPI/I2C bus
 
     esp_lcd_touch_config_t tp_cfg = {
         .x_max = EXAMPLE_LCD_H_RES,
         .y_max = EXAMPLE_LCD_V_RES,
-        .rst_gpio_num = -1,
-        .int_gpio_num = -1,
+        .rst_gpio_num = GPIO_NUM_NC, // Shared with LCD reset
+        .int_gpio_num = EXAMPLE_TOUCH_GPIO_INT,
         .flags = {
             .swap_xy = 0,
             .mirror_x = 0,
@@ -266,10 +304,13 @@ void vTaskLcdTouch(void *pvParameters)
 
 #if CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610
     ESP_LOGI(TAG, "Initialize touch controller STMPE610");
-    ESP_ERROR_CHECK(esp_lcd_touch_new_spi_stmpe610(tp_io_handle, &tp_cfg, &tp));
+    ESP_ERROR_CHECK(esp_lcd_touch_new_spi_stmpe610(tp_io_handle, &tp_cfg, &touch_handle));
 #elif CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_CST816S
     ESP_LOGI(TAG, "Initialize touch controller CST816S");
-    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, &tp));
+    const esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816S_CONFIG();
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)EXAMPLE_TOUCH_I2C_NUM, &tp_io_config, &tp_io_handle));
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, &touch_handle));
+    // ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, &touch_handle));
 #endif // CONFIG_EXAMPLE_LCD_TOUCH_CONTROLLER_STMPE610
 #endif // CONFIG_EXAMPLE_LCD_TOUCH_ENABLED
 
@@ -313,7 +354,7 @@ void vTaskLcdTouch(void *pvParameters)
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.disp = disp;
     indev_drv.read_cb = example_lvgl_touch_cb;
-    indev_drv.user_data = tp;
+    indev_drv.user_data = touch_handle;
 
     lv_indev_drv_register(&indev_drv);
 #endif
