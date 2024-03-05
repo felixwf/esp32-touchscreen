@@ -28,6 +28,8 @@
 #include "lvgl.h"
 #include "task_lcd_touch.h"
 
+#include "main_ui.h"
+
 // only enable 1 lcd controller
 #define CONFIG_EXAMPLE_LCD_CONTROLLER_GC9A01 1
 #define CONFIG_EXAMPLE_LCD_CONTROLLER_ILI9341 0
@@ -359,7 +361,8 @@ void vTaskLcdTouch(void *pvParameters)
 #endif
 
     ESP_LOGI(TAG, "Display LVGL Meter Widget");
-    example_lvgl_demo_ui(disp);
+    // example_lvgl_demo_ui(disp);
+    main_lvgl_demo_ui(disp);
 
     while (1) {
         // raise the task priority of LVGL and/or reduce the handler period can improve the performance
