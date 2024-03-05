@@ -369,5 +369,7 @@ void vTaskLcdTouch(void *pvParameters)
         vTaskDelay(pdMS_TO_TICKS(10));
         // The task running lv_timer_handler should have lower priority than that running `lv_tick_inc`
         lv_timer_handler();
+        // update_chart_with_random_data(power_chart, ser);
+
     }
 }
